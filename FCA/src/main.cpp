@@ -2,7 +2,6 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <Adafruit_SHT31.h>
-#include <SPIFFS.h>
 #include <HTTPClient.h>
 #include <time.h>
 
@@ -15,7 +14,7 @@ const char* ssid = "Sanji";
 const char* password = "Sj*697666";
 
 // --- Google Sheets Configuration ---
-const char* GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzWyqRs6bDF1ma7yHKFlbKQalvfzpu_P2Cr7F59t2JRnk-BN0E5Zs6renBmPrUGG2BC/exec";
+const char* GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyH8vXk41FR6-diKaNI6Jcsi1dxvjDRrUQ1x10jj-a_XBGhzD005zSSrwwMiLg5DgZQLA/exec";
 
 // --- NTP Time Configuration (Tehran timezone) ---
 const char* ntpServer = "pool.ntp.org";
@@ -24,22 +23,22 @@ const int daylightOffset_sec = 0;   // Iran doesn't use daylight saving currentl
 
 // --- Humidifier Control ---
 const int HUMIDIFIER_RELAY_PIN = 14;
-const int HUMIDIFIER_ON_STATE = LOW;
+const int HUMIDIFIER_ON_STATE = HIGH;
 const int HUMIDIFIER_OFF_STATE = !HUMIDIFIER_ON_STATE;
-const float HUMIDITY_LOW_THRESHOLD = 88.0;
-const float HUMIDITY_HIGH_THRESHOLD = 95.0;
+const float HUMIDITY_LOW_THRESHOLD = 85.0;
+const float HUMIDITY_HIGH_THRESHOLD = 93.0;
 
 // --- Random Cycle Relay (Only Pin 32) ---
 const int RELAY_RANDOM_1 = 32;
-const int RANDOM_RELAY_ON_STATE = LOW;
+const int RANDOM_RELAY_ON_STATE = HIGH;
 const int RANDOM_RELAY_OFF_STATE = !RANDOM_RELAY_ON_STATE;
 
 // --- Light Schedule Relay (Pin 33) ---
 const int LIGHT_RELAY_PIN = 33;
-const int LIGHT_ON_STATE = LOW;
+const int LIGHT_ON_STATE = HIGH;
 const int LIGHT_OFF_STATE = !LIGHT_ON_STATE;
-const int LIGHT_ON_HOUR = 7;   // 7 AM
-const int LIGHT_OFF_HOUR = 19; // 7 PM
+const int LIGHT_ON_HOUR = 6;   // 7 AM
+const int LIGHT_OFF_HOUR = 16; // 7 PM
 
 // --- SHT31 Sensor Configuration ---
 constexpr uint8_t SDA_PIN = 21;
@@ -48,8 +47,6 @@ Adafruit_SHT31 sht31_1 = Adafruit_SHT31();
 constexpr uint8_t SHT31_ADDRESS_1 = 0x44;
 
 // --- Data Logging Configuration ---
-const char* LOG_FILE_PATH = "/data_log.csv";
-const unsigned long FILE_LOG_INTERVAL = 300000; // 5 minutes
 const unsigned long GOOGLE_SHEETS_UPLOAD_INTERVAL = 300000; // 5 minutes
 
 // =================================================================
@@ -60,13 +57,12 @@ bool humidityPrimed = false;
 
 // --- Timing ---
 unsigned long lastHumidityCheckTime = 0;
-unsigned long lastFileLogTime = 0;
 unsigned long lastGoogleSheetsUploadTime = 0;
 const unsigned long HUMIDITY_CHECK_INTERVAL = 10000; // 10 seconds
 unsigned long lastWifiCheckTime = 0;
 const unsigned long WIFI_CHECK_INTERVAL = 30000;
 unsigned long lastLightCheckTime = 0;
-const unsigned long LIGHT_CHECK_INTERVAL = 60000; // Check every minute
+const unsigned long LIGHT_CHECK_INTERVAL = 1800000; // Check every 30 minute
 
 // --- Sensor Data for Logging ---
 float hum1_sum = 0;
@@ -75,6 +71,7 @@ int readCount = 0;
 
 // --- Humidifier State ---
 bool isHumidifierOn = false;
+int humidifierOnSeconds = 0;   // Tracks how long humidifier was ON in 5min upload loop
 unsigned long humidifierOnTime = 0;  // Total time humidifier has been ON (in milliseconds)
 unsigned long lastHumidifierStateChange = 0;
 
@@ -91,9 +88,7 @@ bool isLightOn = false;
 // =================================================================
 // 3. HELPER FUNCTION DECLARATIONS
 // =================================================================
-void initSPIFFS();
-void logDataToFile(float avgHum1, float avgTemp1, bool humidifierStatus);
-void uploadToGoogleSheets(float avgHum1, float avgTemp1, bool humidifierStatus);
+void uploadToGoogleSheets(float avg_hum1, float avg_temp1);
 String getTimeString();
 String getRealTimeString();
 void handleHumidifierControl(unsigned long currentTime);
@@ -159,10 +154,6 @@ void setup() {
   randomSeed(analogRead(0));
   Serial.println("[SETUP] ✓ Random cycle seeded.");
 
-  // --- Initialize SPIFFS ---
-  initSPIFFS();
-
-  Serial.println("\n--- Initialization Complete ---");
   Serial.println("[MODE] System is in HUMIDITY_PRIME mode. Waiting for humidity to reach high threshold...");
   Serial.printf("[MODE] Target Humidity: > %.1f%%\n\n", HUMIDITY_HIGH_THRESHOLD);
   
@@ -321,6 +312,8 @@ void printSystemStatus() {
  * @brief Manages the humidifier relay and checks for the initial prime condition.
  */
 void handleHumidifierControl(unsigned long currentTime) {
+  static unsigned long lastHumTick = 0; // tracks last tick used for accumulating ON time
+
   if (currentTime - lastHumidityCheckTime >= HUMIDITY_CHECK_INTERVAL) {
     lastHumidityCheckTime = currentTime;
 
@@ -335,7 +328,18 @@ void handleHumidifierControl(unsigned long currentTime) {
 
     // Update humidifier ON time tracking
     if (isHumidifierOn) {
-      humidifierOnTime += (currentTime - lastHumidifierStateChange);
+      // accumulate only the elapsed time since last tick
+      if (lastHumTick == 0) lastHumTick = currentTime;
+      unsigned long delta = currentTime - lastHumTick;
+      humidifierOnTime += delta;
+      lastHumTick = currentTime;
+
+      // increment the seconds-counter used for uploads (coarse by interval)
+      humidifierOnSeconds += HUMIDITY_CHECK_INTERVAL / 1000;
+      if (humidifierOnSeconds > 300) humidifierOnSeconds = 300;  // cap at 300s
+    } else {
+      // reset tick marker when humidifier is off
+      lastHumTick = 0;
     }
 
     // Apply Control Logic
@@ -381,7 +385,7 @@ void handleRandomCycleRelay(unsigned long currentTime) {
         digitalWrite(RELAY_RANDOM_1, RANDOM_RELAY_ON_STATE);
         randomCycleLastChangeTime = currentTime;
         randomCycleState = STATE_ON;
-        currentRandomOnDuration = random(20, 27) * 1000UL;
+        currentRandomOnDuration = random(18, 28) * 1000UL;
         Serial.printf("[RAND-CYCLE] STATE -> ON. Relay %d ON for %lu ms\n", RELAY_RANDOM_1, currentRandomOnDuration);
       }
       break;
@@ -392,7 +396,7 @@ void handleRandomCycleRelay(unsigned long currentTime) {
         digitalWrite(RELAY_RANDOM_1, RANDOM_RELAY_OFF_STATE);
         randomCycleLastChangeTime = currentTime;
         randomCycleState = STATE_OFF;
-        currentRandomOffDuration = random(240, 360) * 1000UL;
+        currentRandomOffDuration = random(8,12 ) * 60 * 1000UL;
         Serial.printf("[RAND-CYCLE] STATE -> OFF. Relay %d OFF. Next ON in %lu ms.\n", RELAY_RANDOM_1, currentRandomOffDuration);
       }
       break;
@@ -400,24 +404,23 @@ void handleRandomCycleRelay(unsigned long currentTime) {
 }
 
 /**
- * @brief Manages reading sensors and logging data to file and Google Sheets every 5 minutes.
+ * @brief Manages reading sensors and uploading to Google Sheets every 5 minutes.
  */
 void handleDataLogging(unsigned long currentTime) {
   readAndAccumulateSensorData();
 
-  if (currentTime - lastFileLogTime >= FILE_LOG_INTERVAL) {
-    lastFileLogTime = currentTime;
+  if (currentTime - lastGoogleSheetsUploadTime >= GOOGLE_SHEETS_UPLOAD_INTERVAL) {
+    lastGoogleSheetsUploadTime = currentTime;
 
     if (readCount > 0) {
       Serial.printf("\n[LOGGING] 5-minute interval reached. Processing %d sensor readings for logging...\n", readCount);
       float avg_hum1 = hum1_sum / readCount;
       float avg_temp1 = temp1_sum / readCount;
 
-      logDataToFile(avg_hum1, avg_temp1, isHumidifierOn);
       
       // Upload to Google Sheets if WiFi is connected
       if (WiFi.status() == WL_CONNECTED) {
-        uploadToGoogleSheets(avg_hum1, avg_temp1, isHumidifierOn);
+        uploadToGoogleSheets(avg_hum1, avg_temp1);
       } else {
         Serial.println("[GOOGLE-SHEETS] ✗ WiFi not connected. Skipping upload.");
       }
@@ -452,7 +455,7 @@ void readAndAccumulateSensorData() {
 /**
  * @brief Upload data to Google Sheets
  */
-void uploadToGoogleSheets(float avgHum1, float avgTemp1, bool humidifierStatus) {
+void uploadToGoogleSheets(float avg_hum1, float avg_temp1) {
   if (strlen(GOOGLE_SCRIPT_URL) < 10) {
     Serial.println("[GOOGLE-SHEETS] ✗ Google Script URL not configured!");
     return;
@@ -463,13 +466,12 @@ void uploadToGoogleSheets(float avgHum1, float avgTemp1, bool humidifierStatus) 
   http.addHeader("Content-Type", "application/json");
 
   String timestamp = getRealTimeString();
-  String statusStr = humidifierStatus ? "ON" : "OFF";
   
   String jsonPayload = "{";
   jsonPayload += "\"timestamp\":\"" + timestamp + "\",";
-  jsonPayload += "\"humidity\":" + String(avgHum1, 2) + ",";
-  jsonPayload += "\"temperature\":" + String(avgTemp1, 2) + ",";
-  jsonPayload += "\"humidifier_status\":\"" + statusStr + "\"";
+  jsonPayload += "\"humidity\":" + String(avg_hum1, 2) + ",";
+  jsonPayload += "\"temperature\":" + String(avg_temp1, 2) + ",";
+  jsonPayload += "\"humidifier_time\":\"" + String(humidifierOnSeconds) + "\"";
   jsonPayload += "}";
 
   Serial.println("[GOOGLE-SHEETS] Uploading data...");
@@ -481,32 +483,13 @@ void uploadToGoogleSheets(float avgHum1, float avgTemp1, bool humidifierStatus) 
     String response = http.getString();
     Serial.printf("[GOOGLE-SHEETS] ✓ Upload successful! Response code: %d\n", httpResponseCode);
     Serial.printf("[GOOGLE-SHEETS] Response: %s\n", response.c_str());
+    // Reset counter after upload
+    humidifierOnSeconds = 0;
   } else {
     Serial.printf("[GOOGLE-SHEETS] ✗ Upload failed! Error: %s\n", http.errorToString(httpResponseCode).c_str());
   }
 
   http.end();
-}
-
-/**
- * @brief Logs averaged data to SPIFFS file.
- */
-void logDataToFile(float avgHum1, float avgTemp1, bool humidifierStatus) {
-  File file = SPIFFS.open(LOG_FILE_PATH, FILE_APPEND);
-  if (!file) {
-    Serial.println("[LOGGING] ✗ ERROR: Failed to open log file for appending!");
-    return;
-  }
-
-  String timestamp = getRealTimeString();
-  String statusStr = humidifierStatus ? "ON" : "OFF";
-
-  file.printf("%s,%.2f,%.2f,%s\n",
-              timestamp.c_str(), avgHum1, avgTemp1, statusStr.c_str());
-  file.close();
-
-  Serial.printf("[LOGGING] ✓ Data successfully logged to %s. Averages: H=%.1f, T=%.1f\n",
-                LOG_FILE_PATH, avgHum1, avgTemp1);
 }
 
 /**
@@ -544,27 +527,3 @@ String getTimeString() {
   return String(timeStr);
 }
 
-/**
- * @brief Initializes SPIFFS file system
- */
-void initSPIFFS() {
-  if (!SPIFFS.begin(true)) {
-    Serial.println("[SETUP] ✗ ERROR: SPIFFS Mount Failed!");
-    return;
-  }
-  Serial.println("[SETUP] ✓ SPIFFS initialized successfully.");
-
-  if (SPIFFS.exists(LOG_FILE_PATH)) {
-      Serial.printf("[SETUP] ✓ Log file '%s' already exists.\n", LOG_FILE_PATH);
-  } else {
-    Serial.printf("[SETUP] Log file '%s' not found. Creating new file...\n", LOG_FILE_PATH);
-    File file = SPIFFS.open(LOG_FILE_PATH, FILE_WRITE);
-    if (file) {
-      file.println("Timestamp,Humidity(%),Temp(C),Humidifier_Status");
-      file.close();
-      Serial.println("[SETUP] ✓ Log file created successfully.");
-    } else {
-      Serial.println("[SETUP] ✗ ERROR: Failed to create log file!");
-    }
-  }
-}
