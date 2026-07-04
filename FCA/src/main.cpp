@@ -17,12 +17,12 @@ const int SDA_2 = 25;
 const int SCL_2 = 26;
 
 // --- Thresholds & Timings ---
-const float HUMIDITY_LOW_THRESHOLD = 85;
-const float HUMIDITY_HIGH_THRESHOLD = 92.0;
+const float HUMIDITY_LOW_THRESHOLD = 87;
+const float HUMIDITY_HIGH_THRESHOLD = 95.0;
 
 const unsigned long HUMIDITY_CHECK_INTERVAL = 10000; 
 const unsigned long CSV_LOG_INTERVAL = 300000; // 5 minutes
-const unsigned long LIGHT_CYCLE_DURATION = 43200000 / 2; // 6 hours
+const unsigned long LIGHT_CYCLE_DURATION = 43200 /2 *1000; // 6 hours
 
 // --- Relay States ---
 const int HUMIDIFIER_ON_STATE = HIGH;
@@ -241,7 +241,7 @@ void handleHumidifierControl(unsigned long currentTime) {
 }
 
 void handleLightSchedule(unsigned long currentTime) {
-  bool shouldBeOn = (currentTime % (LIGHT_CYCLE_DURATION * 2)) < LIGHT_CYCLE_DURATION;
+  bool shouldBeOn = (currentTime % (LIGHT_CYCLE_DURATION * 2)) > LIGHT_CYCLE_DURATION;
   
   if (shouldBeOn && !isLightOn) {
     digitalWrite(LIGHT_RELAY_PIN, LIGHT_ON_STATE);
@@ -263,7 +263,7 @@ void handleRandomCycleRelay(unsigned long currentTime) {
       randomState = STATE_ON;
       digitalWrite(RELAY_RANDOM_1, RANDOM_RELAY_ON_STATE);
       randomCycleLastChangeTime = currentTime;
-      currentRandomOnDuration = random(10, 15) * 60 * 1000UL;
+      currentRandomOnDuration = random(15, 20) * 60 * 1000UL;
       Serial.println("Random relay ON for " + String(currentRandomOnDuration / 60000) + " minutes");
     }
   } else {
@@ -271,7 +271,7 @@ void handleRandomCycleRelay(unsigned long currentTime) {
       randomState = STATE_OFF;
       digitalWrite(RELAY_RANDOM_1, RANDOM_RELAY_OFF_STATE);
       randomCycleLastChangeTime = currentTime;
-      currentRandomOffDuration = random(45, 60) * 60 * 1000UL;
+      currentRandomOffDuration = random(40, 50) * 60 * 1000UL;
       Serial.println("Random relay OFF for " + String(currentRandomOffDuration / 60000) + " minutes");
     }
   }
