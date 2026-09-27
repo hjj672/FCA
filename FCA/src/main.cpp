@@ -17,8 +17,8 @@ const int SDA_2 = 25;
 const int SCL_2 = 26;
 
 // --- Thresholds & Timings ---
-const float HUMIDITY_LOW_THRESHOLD = 87;
-const float HUMIDITY_HIGH_THRESHOLD = 95.0;
+const float HUMIDITY_LOW_THRESHOLD = 80;
+const float HUMIDITY_HIGH_THRESHOLD = 93.0;
 
 const unsigned long HUMIDITY_CHECK_INTERVAL = 10000; 
 const unsigned long CSV_LOG_INTERVAL = 300000; // 5 minutes

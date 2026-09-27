@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"name": "FCA",
+			"path": "."
+		},
+		{
+			"path": "../../../Plots"
+		},
+		{
+			"name": "tst",
+			"path": "../../../PlatformIO/Projects/tst"
+		},
+		{
+			"name": "cam",
+			"path": "../../../PlatformIO/Projects/cam"
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"array": "cpp",
+			"string": "cpp",
+			"string_view": "cpp"
+		}
+	}
+}
